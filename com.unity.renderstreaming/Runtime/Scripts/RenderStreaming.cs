@@ -1,10 +1,6 @@
-using System;
-using System.Linq;
-using System.Collections.Generic;
-using System.Threading;
-using UnityEngine;
 using Unity.WebRTC;
-using Unity.RenderStreaming.Signaling;
+using UnityEngine;
+using Object = UnityEngine.Object;
 
 #if UNITY_EDITOR
 using UnityEditor;
@@ -12,161 +8,89 @@ using UnityEditor;
 
 namespace Unity.RenderStreaming
 {
-    public sealed class RenderStreaming : MonoBehaviour
+#if UNITY_EDITOR
+    [InitializeOnLoad]
+#endif
+    public static class RenderStreaming
     {
-#pragma warning disable 0649
-        [SerializeField, Tooltip("Signaling server url.")]
-        private string urlSignaling = "http://localhost";
+        internal static RenderStreamingSettings s_settings;
+        internal static GameObject s_automaticStreamingObject;
 
-        [SerializeField, Tooltip("Type of signaling.")]
-        private string signalingType = typeof(HttpSignaling).FullName;
-
-        [SerializeField, Tooltip("Array to set your own STUN/TURN servers.")]
-        private RTCIceServer[] iceServers = new RTCIceServer[]
+        public static bool AutomaticStreaming
         {
-            new RTCIceServer() {urls = new string[] {"stun:stun.l.google.com:19302"}}
-        };
-
-        [SerializeField, Tooltip("Time interval for polling from signaling server.")]
-        private float interval = 5.0f;
-
-        [SerializeField, Tooltip("List of handlers of signaling process.")]
-        private List<SignalingHandlerBase> handlers = new List<SignalingHandlerBase>();
-
-        /// <summary>
-        /// 
-        /// </summary>
-        [SerializeField, Tooltip("Automatically started when called Awake method.")]
-        public bool runOnAwake = true;
-#pragma warning restore 0649
-
-        private RenderStreamingInternal m_instance;
-        private SignalingEventProvider m_provider;
-        private bool m_running;
-
-        static Type GetType(string typeName)
-        {
-            var type = Type.GetType(typeName);
-            if (type != null) return type;
-            foreach (var assembly in System.AppDomain.CurrentDomain.GetAssemblies())
+            get => s_settings.automaticStreaming;
+            set
             {
-                type = assembly.GetType(typeName);
-                if (type != null) return type;
+                s_settings.automaticStreaming = value;
+                ApplySettings();
             }
-            return null;
         }
 
-        static ISignaling CreateSignaling(string type, string url, float interval, SynchronizationContext context)
+        public static T GetSignalingSettings<T>() where T : SignalingSettings
         {
-            Type _type = GetType(type);
-            if (_type == null)
+            return s_settings.signalingSettings as T;
+        }
+
+        static RenderStreaming()
+        {
+            // todo: load from assets
+            var settings = ScriptableObject.CreateInstance<RenderStreamingSettings>();
+            settings.automaticStreaming = false;
+            var signalingSettings = new WebSocketSignalingSettings
             {
-                throw new ArgumentException($"Signaling type is undefined. {type}");
-            }
-            object[] args = { url, interval, context };
-            return (ISignaling)Activator.CreateInstance(_type, args);
-        }
-
-        /// <summary>
-        ///
-        /// </summary>
-        /// <param name="signaling"></param>
-        /// <param name="handlers"></param>
-        public void Run(
-            ISignaling signaling = null,
-            SignalingHandlerBase[] handlers = null)
-        {
-            _Run(null, signaling, handlers);
-        }
-
-        /// <summary>
-        ///
-        /// </summary>
-        /// <param name="conf"></param>
-        /// <param name="signaling"></param>
-        /// <param name="handlers"></param>
-        /// <remarks> To use this method, Need to depend WebRTC package </remarks>
-        public void Run(
-            RTCConfiguration conf,
-            ISignaling signaling = null,
-            SignalingHandlerBase[] handlers = null
-            )
-        {
-            _Run(conf, signaling, handlers);
-        }
-
-        /// <summary>
-        /// 
-        /// </summary>
-        /// <param name="conf"></param>
-        /// <param name="signaling"></param>
-        /// <param name="handlers"></param>
-        private void _Run(
-            RTCConfiguration? conf = null,
-            ISignaling signaling = null,
-            SignalingHandlerBase[] handlers = null
-            )
-        {
-            RTCConfiguration _conf =
-                conf.GetValueOrDefault(new RTCConfiguration { iceServers = iceServers });
-
-            if (signaling != null)
-            {
-                signalingType = signaling.GetType().FullName;
-
-                //todo:: This property is not needed by FurioosSignaling.
-                urlSignaling = signaling.Url;
-                interval = signaling.Interval;
-            }
-            ISignaling _signaling = signaling ?? CreateSignaling(
-                signalingType, urlSignaling, interval, SynchronizationContext.Current);
-            RenderStreamingDependencies dependencies = new RenderStreamingDependencies
-            {
-                config = _conf,
-                signaling = _signaling,
-                startCoroutine = StartCoroutine,
-                stopCoroutine = StopCoroutine,
-                resentOfferInterval = interval,
+                urlSignaling = "ws://127.0.0.1:80",
+                iceServers = new RTCIceServer[]
+                {
+                    new RTCIceServer() {urls = new string[] {"stun:stun.l.google.com:19302"}}
+                }
             };
-            var _handlers = (handlers ?? this.handlers.AsEnumerable()).Where(_ => _ != null);
-            if (_handlers.Count() == 0)
-                throw new InvalidOperationException("Handler list is empty.");
+            settings.signalingSettings = signalingSettings;
+            s_settings = settings;
+        }
 
-            m_instance = new RenderStreamingInternal(ref dependencies);
-            m_provider = new SignalingEventProvider(m_instance);
-
-            foreach (var handler in _handlers)
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        private static void RunInitialize()
+        {
+            if (AutomaticStreaming)
             {
-                handler.SetHandler(m_instance);
-                m_provider.Subscribe(handler);
+                CreateAutomaticStreaming();
             }
-            m_running = true;
         }
 
-        /// <summary>
-        /// 
-        /// </summary>
-        public void Stop()
+        private static void ApplySettings()
         {
-            m_instance?.Dispose();
-            m_instance = null;
-            m_running = false;
-        }
-
-        void Awake()
-        {
-            if (!runOnAwake || m_running)
+            if (!Application.isPlaying)
+            {
                 return;
+            }
 
-            RTCConfiguration conf = new RTCConfiguration { iceServers = iceServers };
-            ISignaling signaling = CreateSignaling(
-                signalingType, urlSignaling, interval, SynchronizationContext.Current);
-            _Run(conf, signaling, handlers.ToArray());
+            if (s_settings.automaticStreaming && s_automaticStreamingObject == null)
+            {
+                CreateAutomaticStreaming();
+            }
+
+            if (!s_settings.automaticStreaming)
+            {
+                CleanUpAutomaticStreaming();
+            }
         }
 
-        void OnDestroy()
+        private static void CreateAutomaticStreaming()
         {
-            Stop();
+            if (s_automaticStreamingObject != null)
+            {
+                Object.DestroyImmediate(s_automaticStreamingObject);
+            }
+
+            s_automaticStreamingObject = new GameObject("AutomaticStreaming");
+            s_automaticStreamingObject.AddComponent<AutomaticStreaming>();
+            Object.DontDestroyOnLoad(s_automaticStreamingObject);
+        }
+
+        private static void CleanUpAutomaticStreaming()
+        {
+            Object.DestroyImmediate(s_automaticStreamingObject);
+            s_automaticStreamingObject = null;
         }
     }
 }
