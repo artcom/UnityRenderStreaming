@@ -12,19 +12,20 @@ using UnityEditor;
 
 namespace Unity.RenderStreaming
 {
-    [AddComponentMenu("Render Streaming/Render Streaming Handler")]
-    public sealed class RenderStreamingHandler : MonoBehaviour
+    [AddComponentMenu("Render Streaming/Signaling Manager")]
+    public sealed class SignalingManager : MonoBehaviour
     {
 #pragma warning disable 0649
         // ToDo: Create component UI on URS-553
-        [SerializeReference] private SignalingSettings signalingSettings = new WebSocketSignalingSettings
-        {
-            urlSignaling = "ws://127.0.0.1:80",
-            iceServers = new RTCIceServer[]
+        [SerializeReference, SignalingSettings]
+        private SignalingSettings signalingSettings = new WebSocketSignalingSettings
+        (
+            url: "ws://127.0.0.1:80",
+            iceServers: new[]
             {
-                new RTCIceServer() {urls = new string[] {"stun:stun.l.google.com:19302"}}
+                new IceServer(urls: new[] {"stun:stun.l.google.com:19302"})
             }
-        };
+        );
 
         [SerializeField, Tooltip("List of handlers of signaling process.")]
         private List<SignalingHandlerBase> handlers = new List<SignalingHandlerBase>();
@@ -36,7 +37,7 @@ namespace Unity.RenderStreaming
         public bool runOnAwake = true;
 #pragma warning restore 0649
 
-        private RenderStreamingInternal m_instance;
+        private SignalingManagerInternal m_instance;
         private SignalingEventProvider m_provider;
         private bool m_running;
 
@@ -60,11 +61,17 @@ namespace Unity.RenderStreaming
         public void SetSignalingSettings(SignalingSettings settings)
         {
             if (m_running)
-            {
                 throw new InvalidOperationException("The Signaling process has already started.");
-            }
+
+            if (settings == null)
+                throw new ArgumentNullException("settings");
 
             signalingSettings = settings;
+        }
+
+        public SignalingSettings GetSignalingSettings()
+        {
+            return signalingSettings;
         }
 
         /// <summary>
@@ -143,13 +150,9 @@ namespace Unity.RenderStreaming
             SignalingHandlerBase[] handlers = null
             )
         {
+            RTCIceServer[] iceServers = signalingSettings.iceServers.OfType<RTCIceServer>().ToArray();
             RTCConfiguration _conf =
-                conf.GetValueOrDefault(new RTCConfiguration { iceServers = signalingSettings.iceServers });
-
-            if (signaling != null)
-            {
-                signalingSettings.urlSignaling = signaling.Url;
-            }
+                conf.GetValueOrDefault(new RTCConfiguration { iceServers = iceServers });
 
             ISignaling _signaling = signaling ?? CreateSignaling(signalingSettings, SynchronizationContext.Current);
             RenderStreamingDependencies dependencies = new RenderStreamingDependencies
@@ -164,7 +167,7 @@ namespace Unity.RenderStreaming
             if (_handlers.Count() == 0)
                 throw new InvalidOperationException("Handler list is empty.");
 
-            m_instance = new RenderStreamingInternal(ref dependencies);
+            m_instance = new SignalingManagerInternal(ref dependencies);
             m_provider = new SignalingEventProvider(m_instance);
 
             foreach (var handler in _handlers)
@@ -187,10 +190,11 @@ namespace Unity.RenderStreaming
 
         void Awake()
         {
-            if (!runOnAwake || m_running　|| handlers.Count == 0)
+            if (!runOnAwake || m_running || handlers.Count == 0)
                 return;
 
-            RTCConfiguration conf = new RTCConfiguration { iceServers = signalingSettings.iceServers };
+            RTCIceServer[] iceServers = signalingSettings.iceServers.Cast<RTCIceServer>().ToArray();
+            RTCConfiguration conf = new RTCConfiguration { iceServers = iceServers };
             ISignaling signaling = CreateSignaling(signalingSettings, SynchronizationContext.Current);
             _Run(conf, signaling, handlers.ToArray());
         }
